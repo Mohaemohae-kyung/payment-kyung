@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>토스페이먼츠 결제 테스트</title>
+  <!-- 토스페이먼츠 결제창 SDK (V1) 추가 -->
+  <script src="https://js.tosspayments.com/v1/payment"></script>
+  <style>
+    body { font-family: sans-serif; padding: 40px; line-height: 1.6; }
+    button { padding: 15px 30px; font-size: 16px; background-color: #3182f6; color: white; border: none; border-radius: 8px; cursor: pointer; }
+    button:hover { background-color: #1b64da; }
+    #result { margin-top: 20px; padding: 20px; border-radius: 8px; background: #f9f9f9; display: none; }
+    pre { white-space: pre-wrap; word-wrap: break-word; }
+  </style>
+</head>
+<body>
+
+  <h1>💸 로컬 결제 테스트 (결제창 방식)</h1>
+  <p>이 페이지는 새로 만든 <strong>결제 서버(Payment Server)</strong>가 토스 API와 정상적으로 통신하는지 테스트하기 위한 임시 프론트엔드입니다.</p>
+  
+  <div id="payment-box">
+    <button onclick="requestPayment()">50,000원 결제하기 (테스트)</button>
+  </div>
+
+  <div id="result">
+    <h3>결제 승인 결과:</h3>
+    <pre id="result-json"></pre>
+  </div>
+
+  <script>
+    // 1. 유저의 테스트 클라이언트 키를 사용하여 TossPayments 객체 초기화
+    const clientKey = 'test_ck_GePWvyJnrKmlw5N22DXR3gLzN97E';
+    const tossPayments = TossPayments(clientKey);
+
+    // 랜덤 주문번호 생성 (테스트용)
+    const generateOrderId = () => 'test_order_' + Math.random().toString(36).substring(2, 10);
+    const amount = 50000;
+
+    function requestPayment() {
+      // 2. 결제창 띄우기
+      tossPayments.requestPayment('카드', {
+        amount: amount,
+        orderId: generateOrderId(),
+        orderName: '테스트 상품',
+        customerName: '김토스',
+        successUrl: window.location.href + '?status=success',
+        failUrl: window.location.href + '?status=fail',
+      }).catch(function (error) {
+        if (error.code === 'USER_CANCEL') {
+          alert('유저가 결제를 취소했습니다.');
+        } else {
+          alert(error.message);
+        }
+      });
+    }
+
+    // 3. 리다이렉트 후 결과 처리 (successUrl로 돌아왔을 때)
+    window.onload = async function() {
+      const urlParams = new URLSearchParams(window.location.search);
+      const status = urlParams.get('status');
+
+      if (status === 'fail') {
+        alert('결제 실패: ' + urlParams.get('message'));
+        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+      }
+
+      if (status === 'success') {
+        const paymentKey = urlParams.get('paymentKey');
+        const orderId = urlParams.get('orderId');
+        const returnAmount = urlParams.get('amount');
+
+        document.getElementById('payment-box').style.display = 'none';
+        document.getElementById('result').style.display = 'block';
+        document.getElementById('result-json').innerText = '결제 승인을 위해 결제 서버(로컬)로 요청 중...⏳';
+
+        try {
+          // 4. 로컬 결제 서버(Express)로 최종 승인 요청 보내기
+          const response = await fetch('http://localhost:4000/api/payments/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              paymentKey: paymentKey,
+              orderId: orderId,
+              amount: returnAmount
+            })
+          });
+
+          const data = await response.json();
+          document.getElementById('result-json').innerText = JSON.stringify(data, null, 2);
+
+          if (data.success) {
+            alert('결제 서버 승인 성공!');
+          } else {
+            alert('결제 서버 승인 실패: ' + data.error);
+          }
+        } catch (err) {
+          document.getElementById('result-json').innerText = '로컬 결제 서버 연결 실패!\n(Node 서버가 켜져 있는지 확인하세요: npm start)';
+          alert('결제 서버 연결에 실패했습니다.');
+        }
+
+        // 주소창 깔끔하게 정리
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    };
+  </script>
+</body>
+</html>
