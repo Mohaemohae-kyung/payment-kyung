@@ -72,7 +72,23 @@ app.post('/api/payments/prepare', async (req, res) => {
     
     console.log(`[Node Payment Server] Transaction 생성 완료: ${orderId}, 최종 승인 금액: ${finalAmount}`);
 
-    // 5) 프론트엔드 모달에 보여줄 응답 구성 및 암호화
+    // 5) Spring Boot로 결제 준비 데이터 전송하여 채팅 메시지 생성 요청 (채팅창 결제 시)
+    try {
+        await axios.post(`${MAIN_SERVER_URL}/api/payments/internal/ready`, {
+            targetType: plainData.targetType,
+            targetId: plainData.targetId,
+            userId: userId,
+            userCouponId: plainData.userCouponId,
+            orderId: orderId,
+            finalAmount: finalAmount,
+            paymentMethod: plainData.paymentMethod,
+            pgProvider: plainData.pgProvider
+        });
+    } catch (err) {
+        console.error('[Node Payment Server] Spring Boot 내부 ready 통신 오류:', err.message);
+    }
+
+    // 6) 프론트엔드 모달에 보여줄 응답 구성 및 암호화
     const responseData = {
         orderId,
         finalAmount,
