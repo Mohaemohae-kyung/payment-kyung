@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const forge = require('node-forge');
+const bcrypt = require('bcrypt');
 const { getPublicKey, decryptHybrid, encryptResponse } = require('./cryptoUtil');
 
 const app = express();
@@ -16,12 +17,40 @@ const MAIN_SERVER_URL = process.env.MAIN_SERVER_URL || 'http://localhost:8080';
 
 // In-memory Database for Transactions (Since Spring Boot is pure proxy)
 const transactionDb = {};
+const failCountDb = {}; // { userId: count }
 
 // =========================================================
 // 1. RSA 공개키 제공 API
 // =========================================================
 app.get('/api/crypto/public-key', (req, res) => {
   res.json({ publicKey: getPublicKey() });
+});
+
+// =========================================================
+// 1.5 결제 비밀번호 설정
+// =========================================================
+app.post('/api/payments/password/setup', async (req, res) => {
+  try {
+      const { plainData } = decryptHybrid(req.body);
+      const { userId, paymentPin } = plainData;
+
+      if (!paymentPin || paymentPin.length !== 6) {
+          return res.status(400).json({ message: "유효하지 않은 비밀번호입니다." });
+      }
+
+      const saltRounds = 10;
+      const hash = await bcrypt.hash(paymentPin, saltRounds);
+
+      await axios.post(`${MAIN_SERVER_URL}/api/payments/internal/password`, {
+          userId,
+          hash
+      });
+
+      res.json({ success: true, message: "결제 비밀번호가 설정되었습니다." });
+  } catch (err) {
+      console.error('[Node Setup Error]', err);
+      res.status(500).json({ message: "비밀번호 설정 중 오류가 발생했습니다." });
+  }
 });
 
 // =========================================================
@@ -34,6 +63,40 @@ app.post('/api/payments/prepare', async (req, res) => {
     
     // 1) E2E 해독
     const { plainData, aesKeyBytes, ivBytes } = decryptHybrid(req.body);
+    const paymentPin = plainData.paymentPin;
+
+    if (!paymentPin) {
+        return res.status(400).json({ code: "INVALID_REQUEST", message: "결제 비밀번호가 누락되었습니다." });
+    }
+
+    if (failCountDb[userId] >= 5) {
+        return res.status(403).json({ code: "ACCOUNT_LOCKED", message: "결제 비밀번호 5회 실패로 계정이 정지되었습니다." });
+    }
+
+    try {
+        const hashRes = await axios.get(`${MAIN_SERVER_URL}/api/payments/internal/password/${userId}`);
+        const hash = hashRes.data.hash;
+        
+        if (!hash) {
+            return res.status(400).json({ code: "PASSWORD_NOT_SET", message: "결제 비밀번호 설정이 필요합니다." });
+        }
+
+        const isMatch = await bcrypt.compare(paymentPin, hash);
+        if (!isMatch) {
+            failCountDb[userId] = (failCountDb[userId] || 0) + 1;
+            if (failCountDb[userId] >= 5) {
+                await axios.post(`${MAIN_SERVER_URL}/api/payments/internal/suspend/${userId}`);
+                return res.status(403).json({ code: "ACCOUNT_LOCKED", message: "결제 비밀번호 5회 연속 실패로 계정이 보호조치 되었습니다." });
+            }
+            return res.status(401).json({ code: "INVALID_PASSWORD", message: `결제 비밀번호가 일치하지 않습니다. (남은 횟수: ${5 - failCountDb[userId]}회)` });
+        }
+        
+        // 성공 시 실패 카운트 리셋
+        failCountDb[userId] = 0;
+    } catch (err) {
+        return res.status(500).json({ code: "INTERNAL_ERROR", message: "비밀번호 검증 중 오류가 발생했습니다." });
+    }
+
     
     // 2) Spring Boot 내부 API로 원가 조회 (프록시 백엔드에 요청)
     let url = `${MAIN_SERVER_URL}/api/payments/internal/target-info?targetType=${plainData.targetType}&targetId=${plainData.targetId}&userId=${userId}`;
