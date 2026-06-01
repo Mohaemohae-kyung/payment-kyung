@@ -69,13 +69,26 @@ app.post('/api/payments/prepare', async (req, res) => {
         return res.status(400).json({ code: "INVALID_REQUEST", message: "결제 비밀번호가 누락되었습니다." });
     }
 
-    if (failCountDb[userId] >= 5) {
-        return res.status(403).json({ code: "ACCOUNT_LOCKED", message: "결제 비밀번호 5회 실패로 계정이 정지되었습니다." });
-    }
-
     try {
         const hashRes = await axios.get(`${MAIN_SERVER_URL}/api/payments/internal/password/${userId}`);
         const hash = hashRes.data.hash;
+        const status = hashRes.data.status;
+        
+        // 데이터베이스 상에서 계정이 정지된 상태라면 Node.js in-memory 상태 동기화 및 즉시 차단
+        if (status === 'SUSPENDED') {
+            failCountDb[userId] = 5;
+            return res.status(403).json({ code: "ACCOUNT_LOCKED", message: "관리자에 의해 정지되거나 결제 비밀번호 5회 실패로 정지된 계정입니다." });
+        }
+        
+        // 데이터베이스 상에서 계정이 정상(ACTIVE 등)인데 Node.js in-memory 상태가 잠겨있다면 (관리자가 해제한 경우)
+        if (status !== 'SUSPENDED' && failCountDb[userId] >= 5) {
+            failCountDb[userId] = 0; // 실패 횟수 초기화
+        }
+        
+        // 현재 in-memory 상에서 잠긴 경우 차단
+        if (failCountDb[userId] >= 5) {
+            return res.status(403).json({ code: "ACCOUNT_LOCKED", message: "결제 비밀번호 5회 실패로 계정이 정지되었습니다." });
+        }
         
         if (!hash) {
             return res.status(400).json({ code: "PASSWORD_NOT_SET", message: "결제 비밀번호 설정이 필요합니다." });
